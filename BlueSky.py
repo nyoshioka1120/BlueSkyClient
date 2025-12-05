@@ -1,15 +1,28 @@
 import asyncio
 import flet as ft
 from atproto import Client
+from atproto import models
+from atproto_client.exceptions import BadRequestError
+import VideoPlayer as vp
+import os
+
+PATH = os.path.join(os.path.dirname(__file__), 'data')
+
+agent = Client(base_url='https://bsky.social')
+client = Client(base_url='https://bsky.social')
 
 # フィードの親クラス
-class Feed(ft.ListView):
-    def __init__(self, client):
+class Feed(ft.Column):
+    WIDTH = 256
+
+    def __init__(self):
         super().__init__()
-        self.client = client
         self.post_list = []
         self.color_list = [ft.Colors.GREY_200,ft.Colors.WHITE]
         self.color = 0
+        self.width = Feed.WIDTH
+        self.scroll = "auto"
+        self.video_path = None
 
     def did_mount(self):
         self.running = True
@@ -18,7 +31,7 @@ class Feed(ft.ListView):
     def will_unmount(self):
         self.running = False
 
-    def create_container(self, text):
+    def create_post_view(self, text):
         content = ft.Text(text)
         color = self.color_list[self.color%2]
         self.color += 1
@@ -29,10 +42,55 @@ class Feed(ft.ListView):
             padding=0,
             alignment=ft.alignment.top_left,
             bgcolor=color,
-            width=500,
+            width=Feed.WIDTH,
             height=content.height,
             border_radius=0,
         )
+    
+    def create_video_post_view(self, _did, _cid, _post, _thumbnail):
+        video_path = os.path.join(PATH, _cid)
+
+        if os.path.exists(video_path) == True:
+            print('skip')
+        else:
+            param = models.ComAtprotoSyncGetBlob.Params(
+                did=_did,
+                cid=_cid
+            )
+
+            try:
+                data = agent.com.atproto.sync.get_blob(params=param)
+                with open(video_path, "wb") as f:
+                    f.write(data)
+            except BadRequestError as e:
+                print("get_blob:ResponsError")
+                return self.create_post_view(_post)
+
+        text = ft.Text(_post)
+        video_view = vp.VideoView(_video_path=video_path, _thumbnail_path=_thumbnail)
+
+        color = self.color_list[self.color%2]
+        self.color += 1
+
+        content = ft.Column(controls=[text, video_view])
+
+        return ft.Container(
+            content=content,
+            margin=0,
+            padding=0,
+            alignment=ft.alignment.top_left,
+            bgcolor=color,
+            width=Feed.WIDTH,
+            height=content.height,
+            border_radius=0,
+        )
+
+    def has_video(self, _record):
+        if 'embed' in vars(_record):
+            if _record.embed is not None and 'video' in vars(_record.embed):
+                return True
+            
+        return False
 
     async def update_timeline(self):
         print("update Feed")
@@ -40,14 +98,13 @@ class Feed(ft.ListView):
 
 # タイムラインフィード
 class Feed_TimeLine(Feed):
-    def __init__(self, client):
-        super().__init__(client)
+    def __init__(self):
+        super().__init__()
 
     async def update_timeline(self):
         while 1:
             # タイムライン取得
-            # client.get_timeline()
-            timeline = self.client.get_timeline()
+            timeline = client.get_timeline()
 
             for feed in reversed(timeline.feed):
                 if feed.post.cid in self.post_list:
@@ -57,7 +114,19 @@ class Feed_TimeLine(Feed):
                 id = feed.post.author.handle
                 text = feed.post.record.text
                 post = display_name + '(@' + id + ')\n' + text
-                self.controls.insert(0, self.create_container(post))
+
+                if self.has_video(feed.post.record):
+                    self.controls.insert(
+                        0,
+                        self.create_video_post_view(
+                            _cid=feed.post.record.embed.video.ref.link,
+                            _did=feed.post.author.did,
+                            _post=post,
+                            _thumbnail=feed.post.embed.thumbnail,
+                        )
+                    )
+                else:
+                    self.controls.insert(0, self.create_post_view(post))
 
                 self.post_list.append(feed.post.cid)
 
@@ -68,9 +137,8 @@ class Feed_TimeLine(Feed):
 
 # 検索フィード
 class Feed_SearchPosts(Feed):
-    def __init__(self, client, word):
-        super().__init__(client)
-        self.client = client
+    def __init__(self, word):
+        super().__init__()
         self.word = word
         self.post_list = []
         self.color_list = [ft.Colors.GREY_200,ft.Colors.WHITE]
@@ -80,7 +148,8 @@ class Feed_SearchPosts(Feed):
         while 1:
             # 検索実行
             # client.app.bsky.feed.search_posts({"q":検索文字, "sort":ソート順, "limit":取得上限})
-            timeline = self.client.app.bsky.feed.search_posts({"q":self.word, "sort":"top", "limit":25})
+            # sort:top トップ（Xでいう話題） | sort:latest 最新
+            timeline = client.app.bsky.feed.search_posts({"q":self.word, "sort":"latest", "limit":25})
 
             for post in timeline.posts:
                 if post.cid in self.post_list:
@@ -90,10 +159,21 @@ class Feed_SearchPosts(Feed):
                 id = post.author.handle
                 text = post.record.text
                 contents = display_name + '(@' + id + ')\n' + text
-                self.controls.append(self.create_container(contents))
+                
+                if self.has_video(post.record):
+                    self.controls.insert(
+                        0,
+                        self.create_video_post_view(
+                            _cid=post.record.embed.video.ref.link,
+                            _did=post.author.did,
+                            _post=contents,
+                            _thumbnail=post.embed.thumbnail
+                        )
+                    )
+                else:
+                    self.controls.insert(0, self.create_post_view(contents))
 
                 self.post_list.append(post.cid)
-                print(post.cid)
 
             self.update()
             print("update Feed_SearchPosts")
@@ -101,8 +181,10 @@ class Feed_SearchPosts(Feed):
 
 
 def main(page: ft.Page):
+    if os.path.exists(PATH) is False:
+        os.mkdir(PATH)
+
     # bluesky ログイン
-    client = Client(base_url='https://bsky.social')
     client.login(login='UserID',password='password')
 
     # window設定
@@ -112,12 +194,7 @@ def main(page: ft.Page):
     # ページ全体のレイアウト
     row = ft.Row()
     row.vertical_alignment = ft.CrossAxisAlignment.START
-
-    # フィード用レイアウト
-    list_feed = ft.ListView()
-    list_feed.horizontal = True
-    list_feed.height = page.height - 20
-    list_feed.spacing = 10
+    row.scroll = "auto"
 
     page.add(row) 
 
@@ -148,27 +225,23 @@ def main(page: ft.Page):
         if txt_search.value == '':
             return
         
-        feed = Feed_SearchPosts(client=client, word=txt_search.value)
+        feed = Feed_SearchPosts(word=txt_search.value)
         feed.height = page.height - 20
-        feed.width = 500
-        list_feed.controls.append(feed)
-        list_feed.update()
+        feed.width = Feed.WIDTH
+        row.controls.append(feed)
+        row.update()
         txt_search.value=''
         page.update()
 
     # 検索ボタン
     btn_search = ft.FilledButton(text="Search", on_click=search)
 
-
     column_post=ft.Column([txt_post, btn_post, txt_search, btn_search])
     row.controls.append(column_post)
 
-    row.controls.append(list_feed)
-
-    time_line = Feed_TimeLine(client=client)
+    time_line = Feed_TimeLine()
     time_line.height = page.height - 20
-    time_line.width = 500
-    list_feed.controls.append(time_line)
+    row.controls.append(time_line)
 
     page.update()
 
