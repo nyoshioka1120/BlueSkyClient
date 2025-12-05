@@ -160,24 +160,3 @@ class VideoView(ft.Container):
 		self.frames += 1
 
 		return True
-
-
-# def main(page: ft.Page):
-# 	page.window.width = 300
-# 	page.window.height = 600
-# 	page.window.left = 1000
-# 	page.window.top = 100
-# 	page.update()
-
-# 	view1 = VideoView('video.mp4', 'p.png')
-# 	page.add(view1)
-
-# 	view2 = VideoView('video.mp4')
-# 	page.add(view2)
-
-# 	view3 = VideoView('video.mp4')
-# 	page.add(view3)
-
-# 	page.update()
-
-# ft.app(target=main)
